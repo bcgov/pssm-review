@@ -1,0 +1,179 @@
+---
+title: "Comparsion of PSSM"
+author: "Richard Martin"
+format:
+  html:
+    self-contained: true
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+```{r, include=FALSE}
+library(tidyverse)
+library(here)
+library(readxl)
+library(conflicted)
+library(janitor)
+library(plotly)
+library(qdapRegex) #for ex_between
+conflicts_prefer(dplyr::filter)
+```
+
+```{r, message=FALSE, warning=FALSE}
+#constants----------------------
+letters <- "[:alpha:]"
+#functions---------------------------
+apply_props <- function(tbbl, val){
+  tbbl|>
+    mutate(count=prop*val)
+}
+
+#compare current and previous pssm in terms of occupation proportions.
+
+noc_mapping <- read_csv(here("data","noc_mapping.csv"))|>
+  clean_names()|>
+  select(noc_2016=noc_2016_v1_3_code, noc_2021=noc_2021_v1_0_code)
+
+old_noc_props <- read_excel(here("data",
+                            "B.C. Post-Secondary Supply Model 2019-20 to 2030-31 2021-09-21 Internal Use.xlsx"),
+                       sheet = "Occupation Projections",
+                       na = "N")|>
+  filter(`Region Name`=="British Columbia",
+         `Age Group`=="17 to 29"
+         )|>
+  pivot_longer(cols=starts_with("2"))|>
+  clean_names()|>
+  mutate(noc_2016=as.numeric(noc_2016))|>
+  full_join(noc_mapping)|>
+  group_by(noc_2021)|>
+  summarize(old_value=sum(value, na.rm = TRUE))|>
+  ungroup()|>
+  mutate(old_prop=old_value/sum(old_value))
+
+
+
+new_noc_props <- read_excel(here("data",
+                                 "draft_internal_use_PSSM_2023-24_to_2034-35_20241002.xlsx"),
+                            sheet = "Occupation Projections",
+                            na = "N",
+                            skip=1)|>
+  filter(`Region Name`=="British Columbia",
+         `Age Group`=="17 to 29")|>
+  pivot_longer(cols=starts_with("2"))|>
+  clean_names()|>
+  group_by(noc_2021, occupation_description)|>
+  summarize(new_value=sum(value, na.rm = TRUE))|>
+  ungroup()|>
+  mutate(new_prop=new_value/sum(new_value),
+         noc_2021=as.numeric(noc_2021))
+
+noc_props <- inner_join(new_noc_props, old_noc_props, by="noc_2021")
+
+new_vs_old_plt <- ggplot(noc_props, aes(old_prop,
+                             new_prop,
+                             text=paste0(
+                               "Occupation: ",
+                               occupation_description,
+                               "\n Previous Proportion= ",
+                               scales::percent(old_prop, accuracy = .001),
+                               "\n Current Proportion= ",
+                               scales::percent(new_prop, accuracy = .001)
+                               )
+                             )
+              )+
+  geom_abline(slope = 1, intercept = 0, col="white", lwd=2)+
+  geom_point(alpha=.25)+
+  scale_x_continuous(trans="log10", labels = scales::percent)+
+  scale_y_continuous(trans="log10", labels=scales::percent)+
+  labs(x="Proportion of BC Grads in Occupation: Previous PSSM",
+       y="Proportion of BC Grads in Occupation: Current PSSM",
+       title="Comparison of PSSM BC graduate proportions by Occupation"
+       )
+
+#compare with props based on bc grad counts (by cip) and canada cip-noc table.
+
+#read in the data-------------------------------------
+
+cip_counts_col_names <- unlist(as.vector(read_csv(here("data","cip_counts_bc.csv"), skip=12, n_max = 1, col_names = FALSE)))
+
+cip_counts <- read_csv(here("data","cip_counts_bc.csv"), skip=14, na = "..", col_names = cip_counts_col_names)|>
+  mutate(CIP=ex_between(`Field of study 5`,"[","]"),
+         CIP=str_remove_all(CIP, letters),
+         CIP=str_pad(CIP, width=5, side = "left", pad = "0"),
+         field_of_study=word(`Field of study 5`, sep="\\["), .before = everything())|>
+  select(-`Field of study 5`)|>
+  pivot_longer(cols = starts_with("2"))|>
+  group_by(CIP, field_of_study)|>
+  summarise(mean_grads=mean(value, na.rm = TRUE))
+
+cip_noc_long <- vroom::vroom(here("data","cip_2_noc_canada.csv"), skip = 13)[-1,]
+colnames(cip_noc_long)[1] <- "field_of_study"
+cip_noc_long <- cip_noc_long|>
+  janitor::remove_empty("cols")|>
+  pivot_longer(cols=-field_of_study, names_to = "noc", values_to = "count")|>
+  mutate(count=as.numeric(str_remove_all(count,",")),
+         CIP=str_sub(field_of_study, 1, 5),
+         field_of_study=str_sub(field_of_study, 7))
+
+
+richs_supply <- cip_noc_long|>
+  group_by(CIP, field_of_study)|>
+  mutate(prop=count/sum(count, na.rm = TRUE))|>
+  select(-count)|>
+  nest()|>
+  inner_join(cip_counts, by="CIP")|>
+  mutate(data=map2(data, mean_grads, apply_props))|>
+  select(data)|>
+  unnest(data)|>
+  group_by(noc)|>
+  summarize(supply_by_occupation=sum(count, na.rm = TRUE))|>
+  ungroup()|>
+  mutate(richs_prop=supply_by_occupation/sum(supply_by_occupation, na.rm = TRUE),
+         noc_2021=as.numeric(str_sub(noc, 1,5))
+         )
+
+rich_vs_new <- inner_join(richs_supply, new_noc_props)
+
+rich_vs_new_plt <- ggplot(rich_vs_new, aes(richs_prop,
+                             new_prop,
+                             text=paste0(
+                               "Occupation: ",
+                               occupation_description,
+                               "\n Rich's Proportion= ",
+                               scales::percent(richs_prop, accuracy = .001),
+                               "\n PSSM Proportion= ",
+                               scales::percent(new_prop, accuracy = .001)
+                             )
+)
+)+
+  geom_abline(slope = 1, intercept = 0, col="white", lwd=2)+
+  geom_point(alpha=.25)+
+  scale_x_continuous(trans="log10", labels = scales::percent)+
+  scale_y_continuous(trans="log10", labels=scales::percent)+
+  labs(x="Proportion of BC Grads in Occupation: Rich",
+       y="Proportion of BC Grads in Occupation: Current PSSM",
+       title="Comparison of PSSM vs. applying CIP/NOC proportions to mean CIP Counts"
+  )
+
+```
+
+## Comparison with previous PSSM
+
+-   Here we compare the by occupation grad proportions for the new vs the old PSSM (for `Age Group`=="17 to 29")
+
+```{r, warning=FALSE}
+ggplotly(new_vs_old_plt, tooltip="text")
+```
+
+
+## Comparison with my method
+
+-   My method is to take the historic mean BC grad counts by CIP (Table: 37-10-0183-01), and apply proportions from Canada's CIP-NOC Table: 98-10-0403-01 (for ages 15-24) to form a prediction of where (i.e. NOCs) the grads will end up working. 
+
+```{r, warning=FALSE}
+ggplotly(rich_vs_new_plt, tooltip = "text")
+```
+
+
+
+
