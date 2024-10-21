@@ -53,7 +53,8 @@ old_noc_props <- read_excel(here("data",
 
 
 new_noc_props <- read_excel(here("data",
-                                 "draft_internal_use_PSSM_2023-24_to_2034-35_20241002.xlsx"),
+                                 #"draft_internal_use_PSSM_2023-24_to_2034-35_20241002.xlsx"),
+                                 "draft_internal_use_PSSM_2023-24_to_2034-35_20241018.xlsx"),
                             sheet = "Occupation Projections",
                             na = "N",
                             skip=1)|>
@@ -155,6 +156,45 @@ rich_vs_new_plt <- ggplot(rich_vs_new, aes(richs_prop,
        title="Comparison of PSSM vs. applying CIP/NOC proportions to mean CIP Counts"
   )
 
+#Compare with last version of PSSM-------------------------------------
+last_version_noc_props <- read_excel(here("data",
+                                          "draft_internal_use_PSSM_2023-24_to_2034-35_20241002.xlsx"),
+                                    sheet = "Occupation Projections",
+                                    na = "N",
+                                    skip=1)|>
+  filter(`Region Name`=="British Columbia",
+         `Age Group`=="17 to 29")|>
+  pivot_longer(cols=starts_with("2"))|>
+  clean_names()|>
+  group_by(noc_2021, occupation_description)|>
+  summarize(last_value=sum(value, na.rm = TRUE))|>
+  ungroup()|>
+  mutate(last_prop=last_value/sum(last_value),
+         noc_2021=as.numeric(noc_2021))
+
+version_compare <- inner_join(new_noc_props, last_version_noc_props)
+
+options(scipen = 999)
+version_compare_plt <- ggplot(version_compare,  aes(new_value,
+                             last_value,
+                             text=paste0(
+                               "Occupation: ",
+                               occupation_description,
+                               "\n Last Value= ",
+                               scales::comma(last_value),
+                               "\n New Value= ",
+                               scales::comma(new_value)
+                             )
+)
+)+
+  geom_abline(slope = 1, intercept = 0, col="white", lwd=2)+
+  geom_jitter(alpha=.25, width=.05, height=.05)+
+  scale_x_continuous(trans="log10")+
+  scale_y_continuous(trans="log10")+
+  labs(x="BC Grads in Occupation: New Version",
+       y="BC Grads in Occupation: Last version",
+       title="Comparison of 2 versions of current PSSM"
+  )
 ```
 
 ## Comparison with previous PSSM
@@ -174,6 +214,10 @@ ggplotly(new_vs_old_plt, tooltip="text")
 ggplotly(rich_vs_new_plt, tooltip = "text")
 ```
 
+## Comparison with first draft
 
+```{r, warning=FALSE}
+ggplotly(version_compare_plt, tooltip = "text")
+```
 
 
